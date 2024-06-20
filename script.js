@@ -200,37 +200,59 @@ async function getDiscipline({ options, taxid, discipline, officer }) {
     console.error(`no discipline for charges ${officer.full_name} ${officer.taxid}`)
     return []
   }
+
+  const chargesByCount = new Map()
+  const allegationsByCount = new Map()
+
+  discipline.forEach(entry => {
+    if (entry.charges_count > 0) {
+      if (!chargesByCount.has(entry.charges_count)) {
+        chargesByCount.set(entry.charges_count, [])
+      }
+      chargesByCount.get(entry.charges_count).push(entry)
+    }
+    if (entry.allegations_count > 0) {
+      if (!allegationsByCount.has(entry.allegations_count)) {
+        allegationsByCount.set(entry.allegations_count, [])
+      }
+      allegationsByCount.get(entry.allegations_count).push(entry)
+    }
+  })
+
   let disciplineEntries = []
-  let chargesGroupId = 1
-  let allegationsGroupId = 1
-  for await (let entry of discipline) {
-    let result
-
-    try {
-      if (entry.charges_count) {
-        result = await scheduleFetch({ url: reportList.charges, options })
-        entry.charges = parseDisciplineCharges(result, chargesGroupId++)
+  if (chargesByCount.size > 0) {
+    const result = await scheduleFetch({ url: reportList.charges, options })
+    const charges = parseDisciplineCharges(result)
+    for (const charge of charges) {
+      const chargeCount = charge.length
+      if (chargesByCount.has(chargeCount) && chargesByCount.get(chargeCount).length === 1) {
+        chargesByCount.get(chargeCount)[0].charges = charge
+        disciplineEntries.push(chargesByCount.get(chargeCount)[0])
+      } else {
+        disciplineEntries.push({
+          charges_count: charge.length,
+          charges: charge,
+        })
       }
-      if (entry.allegations_count) {
-        result = await scheduleFetch({ url: reportList.allegations, options: { ...options, body: `[{"key":"@TAXID","values":["ALLEG${taxid}"]}]` } })
-        entry.allegations = parseDisciplineAllegations(result, allegationsGroupId++)
-      }
-
-      if (entry.charges_count !== entry.charges?.length) {
-        console.info(`mismatch charges count ${officer.full_name} ${officer.taxid}`, entry)
-        officersRetry.set(taxid, officer)
-      }
-      if (entry.allegations_count !== entry.allegations?.length) {
-        console.info(`mismatch allegations count ${officer.full_name} ${officer.taxid}`, entry)
-        officersRetry.set(taxid, officer)
-      }
-
-      disciplineEntries.push(entry)
-    } catch(e) {
-      console.error(`invalid discipline charges/allegations for ${officer.full_name} ${officer.taxid}`, e)
-      officersRetry.set(taxid, officer)
     }
   }
+  if (allegationsByCount.size > 0) {
+    const result = await scheduleFetch({ url: reportList.allegations, options: { ...options, body: `[{"key":"@TAXID","values":["ALLEG${taxid}"]}]` } })
+    const allegations = parseDisciplineAllegations(result)
+    for (const allegation of allegations) {
+      const allegationCount = allegation.length
+      if (allegationsByCount.has(allegationCount) && allegationsByCount.get(allegationCount).length === 1) {
+        allegationsByCount.get(allegationCount)[0].allegations = allegation
+        disciplineEntries.push(allegationsByCount.get(allegationCount)[0])
+      } else {
+        disciplineEntries.push({
+          allegations_count: allegation.length,
+          allegations: allegation,
+        })
+      }
+    }
+  }
+
   return disciplineEntries
 }
 
@@ -301,10 +323,11 @@ function parseDiscipline(data) {
   })
 }
 
-function parseDisciplineCharges(data, groupId) {
+function parseDisciplineCharges(data) {
   if (!validData(data)) return
 
-  let charges = data.filter(charge => charge.groupId === '' + groupId).map(charge => {
+  const charges = new Map()
+  data.forEach(charge => {
     if (!charge.groupName.match('Penalty:')) {
       console.error('no penalty in penalty')
     }
@@ -319,16 +342,21 @@ function parseDisciplineCharges(data, groupId) {
     if (penalty) {
       entry.penalty = penalty
     }
-    return entry
+
+    if (!charges.has(charge.groupId)) {
+      charges.set(charge.groupId, [])
+    }
+    charges.get(charge.groupId).push(entry)
   })
 
-  return charges
+  return charges.values()
 }
 
-function parseDisciplineAllegations(data, groupId) {
+function parseDisciplineAllegations(data) {
   if (!validData(data)) return
 
-  let allegations = data.filter(allegation => allegation.groupId === '' + groupId).map(allegation => {
+  const allegations = new Map()
+  data.forEach(allegation => {
     const group = allegation.groupName.split('Penalty:')
     let penalty = cleanPenalty(group?.[1])
 
@@ -341,10 +369,14 @@ function parseDisciplineAllegations(data, groupId) {
     if (penalty) {
       entry.penalty = penalty
     }
-    return entry
+
+    if (!allegations.has(allegation.groupId)) {
+      allegations.set(allegation.groupId, [])
+    }
+    allegations.get(allegation.groupId).push(entry)
   })
 
-  return allegations
+  return allegations.values()
 }
 
 function parseArrests(data) {
